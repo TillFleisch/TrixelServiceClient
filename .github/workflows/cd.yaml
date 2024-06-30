@@ -1,0 +1,59 @@
+name: CD
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  pre-commit:
+    name: Run pre-commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11-dev"
+
+      - uses: pre-commit/action@v3.0.1
+
+  build_client:
+    needs: [pre-commit]
+    runs-on: ubuntu-latest
+    name: Build client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11-dev"
+
+      - name: Install build
+        run: python -m pip install build
+
+      - name: Build client distributables
+        run: python -m build
+
+      - name: Install wheel
+        run: pip install dist/*.whl --force-reinstall
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-dist
+          path: ./dist/*
+
+  publish-client-pypi:
+    needs: [build_client]
+    name: Publish to PyPi
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Download client distributable
+        uses: actions/download-artifact@v4
+        with:
+          name: client-dist
+          path: dist/
+          merge-multiple: true
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
