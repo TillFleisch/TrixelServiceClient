@@ -1,7 +1,24 @@
 """Global schemas related to the trixel service client."""
 
-from pydantic import BaseModel, PositiveInt
+from pydantic import UUID4, BaseModel, ConfigDict, PositiveInt
 from pydantic_extra_types.coordinate import Coordinate
+from trixelmanagementclient import Client as TMSClient
+
+
+class TMSInfo(BaseModel):
+    """Schema which hold details related to a TMS."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    id: int
+    host: str
+    client: TMSClient
+
+
+class MeasurementStationConfig(BaseModel):
+    """Measurement station details which are used for authentication at the TMS."""
+
+    uuid: UUID4
+    token: str
 
 
 class ClientConfig(BaseModel):
@@ -17,3 +34,4 @@ class ClientConfig(BaseModel):
     tls_use_ssl: bool = True
     tms_use_ssl: bool = True
     tms_address_override: str | None = None
+    ms_config: MeasurementStationConfig | None = None
