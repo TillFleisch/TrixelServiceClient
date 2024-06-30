@@ -1,0 +1,37 @@
+[tool.black]
+line-length = 120
+
+[tool.flake8]
+max-line-length = 120
+
+[tool.isort]
+profile = "black"
+#known_local_folder = ["src", "tests"] # TODO: remove?
+
+[project.optional-dependencies]
+dev = ["black", "isort"]
+
+
+[project]
+name = "trixelserviceclient"
+version = "0.0.0"
+description = "Simple Python client for participating in privacy aware environmental monitoring."
+readme = "README.md"
+authors = [{ name = "Till", email = "till@fleisch.dev" }]
+license = { file = "LICENSE" }
+keywords = ["trixel", "private", "privacy focused","environmental monitoring", "sensor network"]
+dependencies = [
+    'tomli; python_version < "3.11"',
+    'pydantic',
+    'pydantic-extra-types',
+    'packaging',
+    'pynyhtm',
+    'trixellookupclient',
+    'trixelmanagementclient',
+    'colorlog',
+]
+
+[project.urls]
+Homepage = "https://github.com/TillFleisch/TrixelServiceClient"
+Repository = "https://github.com/TillFleisch/TrixelServiceClient.git"
+Issues = "https://github.com/TillFleisch/TrixelServiceClient/issues"
