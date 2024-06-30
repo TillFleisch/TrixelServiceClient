@@ -1,7 +1,6 @@
 """Simple client for the trixel based environmental observation sensor network."""
 
 import asyncio
-import enum
 import importlib
 from http import HTTPStatus
 from typing import Callable
@@ -26,29 +25,38 @@ from trixelmanagementclient.api.measurement_station import (
     add_measurement_station_measurement_station_put as tms_update_station,
 )
 from trixelmanagementclient.api.measurement_station import (
+    add_sensor_to_measurement_station_measurement_station_sensor_post as tms_add_sensor,
+)
+from trixelmanagementclient.api.measurement_station import (
     create_measurement_station_measurement_station_post as tms_register_station,
 )
 from trixelmanagementclient.api.measurement_station import (
     delete_measurement_station_measurement_station_delete as tms_delete_station,
 )
 from trixelmanagementclient.api.measurement_station import (
+    delete_sensor_from_measurement_station_measurement_station_sensor_sensor_id_delete as tms_delete_sensor,
+)
+from trixelmanagementclient.api.measurement_station import (
     get_measurement_station_detail_measurement_station_get as tms_get_station_detail,
+)
+from trixelmanagementclient.api.measurement_station import (
+    get_sensors_for_measurement_station_measurement_station_sensors_get as tms_get_sensors,
 )
 from trixelmanagementclient.models import MeasurementStation, MeasurementStationCreate
 from trixelmanagementclient.models import Ping as TMSPing
+from trixelmanagementclient.models import SensorDetailed
 from trixelmanagementclient.types import Response as TMSResponse
 
 from logging_helper import get_logger
-from schema import ClientConfig, MeasurementStationConfig, TMSInfo
+from schema import (
+    ClientConfig,
+    MeasurementStationConfig,
+    MeasurementType,
+    Sensor,
+    TMSInfo,
+)
 
 logger = get_logger(__name__)
-
-
-class MeasurementType(str, enum.Enum):
-    """Available measurement types."""
-
-    AMBIENT_TEMPERATURE = "ambient_temperature"
-    RELATIVE_HUMIDITY = "relative_humidity"
 
 
 class Client:
@@ -73,7 +81,7 @@ class Client:
     _dead: asyncio.Event = asyncio.Event()
 
     # User defined method which is called to persist configuration changes
-    _config_persister: Callable[[ClientConfig], None] = None
+    _config_persister: Callable[[ClientConfig], None]
 
     @property
     def location(self) -> Coordinate:
@@ -93,12 +101,12 @@ class Client:
         try:
             if not self.is_dead.is_set() and self._ready.is_set():
                 self._ready.clear()
-                await self.tls_negotiate_trixel_ids()
-                await self.update_responsible_tms()
-                self.persist_config()
+                await self._tls_negotiate_trixel_ids()
+                await self._update_responsible_tms()
+                self._persist_config()
                 self._ready.set()
             else:
-                self.persist_config()
+                self._persist_config()
             return True
         except Exception:
             self._config.location = old_location
@@ -122,14 +130,130 @@ class Client:
         try:
             if not self.is_dead.is_set() and self._ready.is_set():
                 self._ready.clear()
-                await self.sync_all_tms()
-                self.persist_config()
+                await self._sync_all_tms()
+                self._persist_config()
                 self._ready.set()
             else:
-                self.persist_config()
+                self._persist_config()
+            return True
         except Exception:
             self._config.k = old_k
             return False
+
+    @property
+    def sensors(self) -> list[Sensor]:
+        """List of sensors managed by this client."""
+        return self._config.sensors
+
+    async def add_sensor(self, new_senor: Sensor) -> Sensor:
+        """
+        Add a new sensor to this client and sync with the responsible TMS.
+
+        :param new_sensor: The sensor which should be added
+        :returns: The added sensor which contains it's assigned ID
+        """
+        if self.is_dead.is_set() or not self._ready.is_set():
+            raise RuntimeError("Sensors can only be added when the client is running and ready!")
+
+        if new_senor.sensor_id is not None:
+            raise ValueError("Sensor must have undefined ID!")
+
+        new_sensor_index = len(self._config.sensors)
+        self._config.sensors.append(new_senor)
+
+        # Assumption: only a single TMS is used - all trixels share the same TMS
+        tms = next(iter(self._tms_lookup.values()))
+
+        self._ready.clear()
+        try:
+            await self._sync_sensors(tms)
+            self._persist_config()
+            self._ready.set()
+        except Exception as e:
+            logger.warning(f"Failed to add sensor: {new_senor.sensor_id}!")
+            self._config.sensors.pop()
+            raise e
+
+        logger.info(f"Added new sensor (id:{self._config.sensors[new_sensor_index].sensor_id})")
+        return self._config.sensors[new_sensor_index]
+
+    async def update_sensor_details(self, new_sensor: Sensor) -> Sensor:
+        """
+        Update a sensors details within the client and sync change to the TMS.
+
+        Note: currently - at the TMS the sensor is delete and newly instantiated
+
+        :param new_sensor: The new sensor configuration (must contain an ID)
+        :returns: The updated sensor (which currently may have a different ID)
+        """
+        if new_sensor.sensor_id is None:
+            raise ValueError("Sensor does not provide an id.")
+
+        sensor_index = None
+        for idx, existing_sensor in enumerate(self._config.sensors):
+            if existing_sensor.sensor_id == new_sensor.sensor_id:
+                sensor_index = idx
+
+        if sensor_index is None:
+            raise ValueError("Invalid sensor provided, ID not found.")
+
+        old_sensor = self._config.sensors[sensor_index]
+        self._config.sensors[sensor_index] = new_sensor
+
+        if not self.is_dead.is_set() and self._ready.is_set():
+            # Assumption: only a single TMS is used - all trixels share the same TMS
+            tms = next(iter(self._tms_lookup.values()))
+            self._ready.clear()
+            try:
+                await self._sync_sensors(tms)
+                self._persist_config()
+                self._ready.set()
+            except Exception as e:
+                logger.warning(f"Failed to update sensor: {new_sensor.sensor_id}!")
+                self._config.sensors[sensor_index] = old_sensor
+                raise e
+        else:
+            self._persist_config()
+
+        logger.debug(f"Updated sensor {new_sensor.sensor_id}")
+        return self._config.sensors[sensor_index]
+
+    async def delete_sensor(self, sensor: int | Sensor):
+        """
+        Delete a sensor from this client and sync the change the the TMS.
+
+        :param sensor: The Sensor (or it's id) which should be removed
+        """
+        if isinstance(sensor, Sensor):
+            sensor_id = sensor.sensor_id
+        else:
+            sensor_id = sensor
+
+        sensor_index = None
+        for idx, existing_sensor in enumerate(self._config.sensors):
+            if existing_sensor.sensor_id == sensor_id:
+                sensor_index = idx
+
+        if sensor_index is None:
+            raise ValueError("Invalid sensor provided.")
+
+        old_sensor = self._config.sensors[sensor_index]
+        del self._config.sensors[sensor_index]
+
+        if not self.is_dead.is_set() and self._ready.is_set():
+            # Assumption: only a single TMS is used - all trixels share the same TMS
+            tms = next(iter(self._tms_lookup.values()))
+            self._ready.clear()
+            try:
+                await self._sync_sensors(tms)
+                self._persist_config()
+                self._ready.set()
+            except Exception as e:
+                logger.warning(f"Failed to delete sensor {old_sensor.sensor_id}!")
+                self._config.sensors.append(old_sensor)
+                raise e
+        else:
+            self._persist_config()
 
     @property
     def is_ready(self) -> asyncio.Event:
@@ -160,7 +284,7 @@ class Client:
             base_url=f"http{'s' if self._config.tls_use_ssl else ''}://{config.tls_host}/v{tls_major_version}",
         )
 
-    def persist_config(self):
+    def _persist_config(self):
         """Call the user defined configuration persist method."""
         logger.debug("Persisting client configuration.")
         return self._config_persister(self._config)
@@ -171,17 +295,17 @@ class Client:
         # TODO: some notion of sensors
 
         # TODO: should sensors be able to be added aafterwards?
-        await self.tls_negotiate_trixel_ids()
-        await self.update_responsible_tms()
+        await self._tls_negotiate_trixel_ids()
+        await self._update_responsible_tms()
 
-        await self.sync_all_tms()
+        await self._sync_all_tms()
 
         # TODO: register sensors at TMS
         # TODO: sync sensor config
 
         self._ready.set()
 
-    async def tls_negotiate_trixel_ids(self):
+    async def _tls_negotiate_trixel_ids(self):
         """Negotiate the smallest trixels for each measurement type which satisfies the k requirement."""
         # TODO: infer types from registered sensors
         types = [MeasurementType.AMBIENT_TEMPERATURE, MeasurementType.RELATIVE_HUMIDITY]
@@ -222,7 +346,7 @@ class Client:
 
         self._trixel_lookup = trixels
 
-    async def update_responsible_tms(self):
+    async def _update_responsible_tms(self):
         """Retrieve the responsible TMSs for all required trixels."""
         tms_api_version = importlib.metadata.version("trixelmanagementclient")
         tms_ssl = "s" if self._config.tms_use_ssl else ""
@@ -272,7 +396,7 @@ class Client:
 
             logger.info(f"Retrieved valid TMS(id:{tms_response.id} host: {tms_response.host}).")
 
-    async def register_at_tms(self, tms: TMSInfo) -> MeasurementStationConfig:
+    async def _register_at_tms(self, tms: TMSInfo) -> MeasurementStationConfig:
         """
         Register this client at the TMS.
 
@@ -309,11 +433,12 @@ class Client:
             raise RuntimeError(f"Failed to delete measurement station at TMS: {tms.id}")
 
         self._config.ms_config = None
-        self.persist_config()
+        self._config.sensors = list()
+        self._persist_config()
         logger.info(f"Removed measurement station from TMS {tms.id}.")
         self._dead.set()
 
-    async def sync_all_tms(self):
+    async def _sync_all_tms(self):
         """Synchronize this client with all TMSs."""
         # Assumption: only a single TMS is used - all trixels share the same TMS
         tms_info = next(iter(self._tms_lookup.values()))
@@ -324,9 +449,20 @@ class Client:
         ms_config = self._config.ms_config
 
         if ms_config is None:
-            self._config.ms_config = await self.register_at_tms(tms)
-            self.persist_config()
+            self._config.ms_config = await self._register_at_tms(tms)
+            self._persist_config()
 
+        await self._sync_station_properties(tms)
+        await self._sync_sensors(tms)
+
+        logger.info(f"Synchronized with TMS {tms.id}")
+
+    async def _sync_station_properties(self, tms: TMSInfo):
+        """
+        Synchronize measurement station properties with the provided TMS.
+
+        :param tms: The TMS with which properties are synchronized
+        """
         detail_response: TMSResponse[MeasurementStation] = await tms_get_station_detail.asyncio_detailed(
             client=tms.client,
             token=self._config.ms_config.token,
@@ -347,6 +483,108 @@ class Client:
                 logger.critical(f"Failed to synchronize settings with TMS: {tms.id}")
                 raise RuntimeError(f"Failed to synchronize settings with TMS: {tms.id}")
 
-        # TODO: synchronize sensors
+    async def _sync_sensors(self, tms: TMSInfo):
+        """
+        Synchronize sensors and their properties with the provided TMS.
 
-        logger.info(f"Synchronized with TMS {tms.id}")
+        :param tms: The TMS with which properties are synchronized
+        """
+        sensors_response: TMSResponse[list[SensorDetailed]] = await tms_get_sensors.asyncio_detailed(
+            client=tms.client, token=self._config.ms_config.token
+        )
+
+        if sensors_response.status_code != HTTPStatus.OK:
+            logger.critical(f"Failed to retrieve registered sensors from TMS: {tms.id}")
+            raise RuntimeError(f"Failed to retrieve registered sensors from TMS: {tms.id}")
+
+        existing_sensors: list[SensorDetailed] = sensors_response.parsed
+
+        missing_sensor_indices = set()
+        update_sensor_indices = set()
+        for idx, sensor in enumerate(self._config.sensors):
+            if sensor.sensor_id is None:
+                missing_sensor_indices.add(idx)
+            else:
+                for existing_sensor in existing_sensors:
+                    if existing_sensor.id == sensor.sensor_id and (
+                        existing_sensor.details.accuracy != sensor.accuracy
+                        or existing_sensor.details.sensor_name != sensor.sensor_name
+                        or existing_sensor.measurement_type != sensor.measurement_type
+                    ):
+                        update_sensor_indices.add(idx)
+
+        # Find orphaned sensors
+        delete_sensor_indices = set()
+        for existing_sensor in existing_sensors:
+            in_local_config = False
+            for idx, sensor in enumerate(self._config.sensors):
+                if sensor.sensor_id is not None and sensor.sensor_id == existing_sensor.id:
+                    in_local_config = True
+            if not in_local_config:
+                delete_sensor_indices.add(existing_sensor.id)
+
+        # Delete orphaned sensors form the TMS
+        for sensor_id in delete_sensor_indices:
+            logger.debug(f"Deleting orphaned sensor {sensor_id}")
+            await self._tms_delete_sensor(tms, sensor_id)
+
+        # Update existing sensors if there are config changes on the client side
+        for idx in update_sensor_indices:
+            # TODO: update sensor config at the TMS (not implemented)
+            logger.warn("Replacing sensor due to configuration change!")
+            sensor = self._config.sensors[idx]
+            await self._tms_delete_sensor(tms, sensor.sensor_id)
+            self._config.sensors[idx] = await self._tms_add_sensor(tms, sensor)
+            self._persist_config()
+
+        # Add new sensors to TMS
+        for idx in missing_sensor_indices:
+            self._config.sensors[idx] = await self._tms_add_sensor(tms, sensor)
+            self._persist_config()
+
+    async def _tms_add_sensor(self, tms: TMSInfo, sensor: Sensor) -> Sensor:
+        """
+        Create a new sensor at the TMS.
+
+        :param tms: The TMS at which the sensor is added
+        :param sensor: sensor with details, which will be added
+        :returns: The added sensors with it's ID
+        """
+        add_sensor_response: TMSResponse[SensorDetailed] = await tms_add_sensor.asyncio_detailed(
+            client=tms.client,
+            token=self._config.ms_config.token,
+            type=sensor.measurement_type,
+            accuracy=sensor.accuracy,
+            sensor_name=sensor.sensor_name,
+        )
+
+        if add_sensor_response.status_code != HTTPStatus.CREATED:
+            logger.critical(f"Failed to retrieve registered sensors from TMS: {tms.id}")
+            raise RuntimeError(f"Failed to retrieve registered sensors from TMS: {tms.id}")
+
+        new_sensor: SensorDetailed = add_sensor_response.parsed
+        logger.info(f"Added new sensor ({new_sensor.id}) to TMS {tms.id}.")
+
+        return Sensor(
+            sensor_id=new_sensor.id,
+            measurement_type=new_sensor.measurement_type,
+            accuracy=new_sensor.details.accuracy,
+            sensor_name=new_sensor.details.sensor_name,
+        )
+
+    async def _tms_delete_sensor(self, tms: TMSInfo, sensor_id: int) -> None:
+        """
+        Delete the give sensor from the TMS.
+
+        :param tms: The TMS at which the sensor should be deleted
+        :param sensor_id: The id of the sensor which should be removed
+        """
+        delete_sensor_response: TMSResponse = await tms_delete_sensor.asyncio_detailed(
+            client=tms.client, token=self._config.ms_config.token, sensor_id=sensor_id
+        )
+
+        if delete_sensor_response.status_code != HTTPStatus.NO_CONTENT:
+            logger.critical(f"Failed to delete sensor ({sensor_id}) from TMS: {tms.id}")
+            raise RuntimeError(f"Failed to delete sensor ({sensor_id}) from TMS: {tms.id}")
+
+        logger.info(f"Deleted sensor ({sensor_id}) from TMS: {tms.id}")

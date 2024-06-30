@@ -5,11 +5,6 @@ import logging
 import colorlog
 from colorlog import ColoredFormatter
 
-# from config_schema import GlobalConfig
-
-# __log_level = GlobalConfig.config.log_level
-
-
 formatter = ColoredFormatter(
     "%(asctime)s %(log_color)s%(levelname)s%(fg_white)s:%(name)s: %(log_color)s%(message)s",
     reset=True,
@@ -28,6 +23,5 @@ def get_logger(name: str | None):
     handler.setFormatter(formatter)
     logger = logging.getLogger(name)
     logger.addHandler(handler)
-    # logger.setLevel(__log_level)
     logger.setLevel(logging.DEBUG)
     return logger
