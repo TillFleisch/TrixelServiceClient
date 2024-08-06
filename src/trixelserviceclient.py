@@ -2,6 +2,8 @@
 
 import asyncio
 import importlib
+import json
+from datetime import datetime
 from http import HTTPStatus
 from typing import Callable
 
@@ -42,8 +44,15 @@ from trixelmanagementclient.api.measurement_station import (
 from trixelmanagementclient.api.measurement_station import (
     get_sensors_for_measurement_station_measurement_station_sensors_get as tms_get_sensors,
 )
+from trixelmanagementclient.api.trixels import (
+    publish_sensor_updates_to_trixels_trixel_update_put as tms_batch_publish,
+)
+from trixelmanagementclient.models import Measurement as TMSMeasurement
 from trixelmanagementclient.models import MeasurementStation, MeasurementStationCreate
 from trixelmanagementclient.models import Ping as TMSPing
+from trixelmanagementclient.models import (
+    PublishSensorUpdatesToTrixelsTrixelUpdatePutUpdates as Update,
+)
 from trixelmanagementclient.models import SensorDetailed
 from trixelmanagementclient.types import Response as TMSResponse
 
@@ -52,8 +61,10 @@ from schema import (
     ClientConfig,
     MeasurementStationConfig,
     MeasurementType,
+    SeeOtherReason,
     Sensor,
     TMSInfo,
+    TrixelLevelChange,
 )
 
 logger = get_logger(__name__)
@@ -66,19 +77,19 @@ class Client:
     _tsl_client: TLSClient
 
     # trixel_id -> (tms_id, TMSClient)
-    _tms_lookup: dict[int, TMSInfo] = dict()
+    _tms_lookup: dict[int, TMSInfo]
 
     # Lookup table which yields the trixel to which different measurement types contribute
-    _trixel_lookup: dict[MeasurementType, int] = dict()
+    _trixel_lookup: dict[MeasurementType, int]
 
     # The configuration used by this client
     _config: ClientConfig
 
     # Indicates if the client is in-sync with the responsible TMS
-    _ready: asyncio.Event = asyncio.Event()
+    _ready: asyncio.Event
 
     # Indicates that the client has finished it's work when set
-    _dead: asyncio.Event = asyncio.Event()
+    _dead: asyncio.Event
 
     # User defined method which is called to persist configuration changes
     _config_persister: Callable[[ClientConfig], None]
@@ -161,7 +172,16 @@ class Client:
         new_sensor_index = len(self._config.sensors)
         self._config.sensors.append(new_senor)
 
+        # Determine trixels including a potentially newly added type
+        # Register at new TMSs
+        await self._tls_negotiate_trixel_ids()
+        await self._update_responsible_tms()
+        await self._sync_all_tms()
+
         # Assumption: only a single TMS is used - all trixels share the same TMS
+        if len(self._tms_lookup.values()) == 0:
+            logger.critical("TMS unknown!")
+            raise RuntimeError("TMS unknown!")
         tms = next(iter(self._tms_lookup.values()))
 
         self._ready.clear()
@@ -174,7 +194,6 @@ class Client:
             self._config.sensors.pop()
             raise e
 
-        logger.info(f"Added new sensor (id:{self._config.sensors[new_sensor_index].sensor_id})")
         return self._config.sensors[new_sensor_index]
 
     async def update_sensor_details(self, new_sensor: Sensor) -> Sensor:
@@ -202,6 +221,9 @@ class Client:
 
         if not self.is_dead.is_set() and self._ready.is_set():
             # Assumption: only a single TMS is used - all trixels share the same TMS
+            if len(self._tms_lookup.values()) == 0:
+                logger.critical("TMS unknown!")
+                raise RuntimeError("TMS unknown!")
             tms = next(iter(self._tms_lookup.values()))
             self._ready.clear()
             try:
@@ -242,6 +264,9 @@ class Client:
 
         if not self.is_dead.is_set() and self._ready.is_set():
             # Assumption: only a single TMS is used - all trixels share the same TMS
+            if len(self._tms_lookup.values()) == 0:
+                logger.critical("TMS unknown!")
+                raise RuntimeError("TMS unknown!")
             tms = next(iter(self._tms_lookup.values()))
             self._ready.clear()
             try:
@@ -277,6 +302,10 @@ class Client:
         """Initialize the client with the given config."""
         self._config = config
         self._config_persister = config_persister
+        self._tms_lookup = dict()
+        self._trixel_lookup = dict()
+        self._ready = asyncio.Event()
+        self._dead = asyncio.Event()
 
         tls_api_version = importlib.metadata.version("trixellookupclient")
         tls_major_version = packaging.version.Version(tls_api_version).major
@@ -292,32 +321,32 @@ class Client:
     async def run(self):
         """Start the client, registers or resumes work at the responsible TMS."""
         self._dead.clear()
-        # TODO: some notion of sensors
 
-        # TODO: should sensors be able to be added aafterwards?
         await self._tls_negotiate_trixel_ids()
         await self._update_responsible_tms()
-
         await self._sync_all_tms()
-
-        # TODO: register sensors at TMS
-        # TODO: sync sensor config
 
         self._ready.set()
 
     async def _tls_negotiate_trixel_ids(self):
         """Negotiate the smallest trixels for each measurement type which satisfies the k requirement."""
-        # TODO: infer types from registered sensors
-        types = [MeasurementType.AMBIENT_TEMPERATURE, MeasurementType.RELATIVE_HUMIDITY]
+        types = set()
+        for sensor in self._config.sensors:
+            types.add(sensor.measurement_type)
+
+        if len(types) == 0:
+            self._trixel_lookup = dict()
+            return
 
         sc = pynyhtm.SphericalCoordinate(self._config.location.latitude, self._config.location.longitude)
 
         trixels: dict[MeasurementType, int] = dict()
 
         for type_ in types:
-            trixels[type_] = sc.get_htm_id(level=0)
+            trixels[type_] = sc.get_htm_id(level=1)
 
-        for level in range(0, 20):
+        # Descend as deep as the user config allows
+        for level in range(1, self._config.max_depth):
             trixel_id = sc.get_htm_id(level=level)
 
             trixel_info: TLSResponse[TrixelMap] = await get_sensor_count.asyncio_detailed(
@@ -334,7 +363,8 @@ class Client:
             for type_ in trixel_info.sensor_counts.to_dict():
                 if trixel_info.sensor_counts[type_] >= self._config.k:
                     empty = False
-                    trixels[type_] = trixel_id  # TODO: consider level +1???
+                    # Use one trixel lower than k-anonymous, assume the TMS retains this information
+                    trixels[type_] = sc.get_htm_id(level=level + 1)
 
             if empty:
                 break
@@ -379,22 +409,24 @@ class Client:
                 client = TMSClient(base_url=f"http{tms_ssl}://{tms.host}/v{tms_major_version}")
             self._tms_lookup[trixel_id] = TMSInfo(id=tms.id, client=client, host=tms.host)
 
+        if len(self._tms_lookup.values()) == 0:
+            logger.critical("TMS unknown!")
+            raise RuntimeError("TMS unknown!")
+
         # Validate retrieved TMSs are available
         checked_tms_ids = set()
-        for trixel_id, tms_response in self._tms_lookup.items():
+        for trixel_id, tms_info in self._tms_lookup.items():
 
-            if tms_response.id in checked_tms_ids:
+            if tms_info.id in checked_tms_ids:
                 continue
-            checked_tms_ids.add(tms_response.id)
+            checked_tms_ids.add(tms_info.id)
 
-            tms_ping: TMSResponse[TMSPing] = await tms_get_ping.asyncio_detailed(client=client)
+            tms_ping: TMSResponse[TMSPing] = await tms_get_ping.asyncio_detailed(client=tms_info.client)
             if tms_ping.status_code != HTTPStatus.OK:
-                logger.critical(f"Failed to ping TMS(id:{tms_response.id} host: {tms_response.host})")
-                raise RuntimeError(
-                    f"Failed to ping TMS(id:{tms_response.id} host: {tms_response.host}): {tms_ping.content}"
-                )
+                logger.critical(f"Failed to ping TMS(id:{tms_info.id} host: {tms_info.host})")
+                raise RuntimeError(f"Failed to ping TMS(id:{tms_info.id} host: {tms_info.host}): {tms_ping.content}")
 
-            logger.info(f"Retrieved valid TMS(id:{tms_response.id} host: {tms_response.host}).")
+            logger.info(f"Retrieved valid TMS(id:{tms_info.id} host: {tms_info.host}).")
 
     async def _register_at_tms(self, tms: TMSInfo) -> MeasurementStationConfig:
         """
@@ -421,7 +453,13 @@ class Client:
 
     async def delete(self):
         """Remove this measurement station from all TMS where it's registered."""
+        if self.is_dead.is_set() or not self._ready.is_set():
+            raise RuntimeError("Deletion only allowed if the client is running and ready!")
+
         # Assumption: only a single TMS is used - all trixels share the same TMS
+        if len(self._tms_lookup.values()) == 0:
+            logger.critical("TMS unknown!")
+            raise RuntimeError("TMS unknown!")
         tms = next(iter(self._tms_lookup.values()))
 
         delete_response: TMSResponse = await tms_delete_station.asyncio_detailed(
@@ -441,6 +479,9 @@ class Client:
     async def _sync_all_tms(self):
         """Synchronize this client with all TMSs."""
         # Assumption: only a single TMS is used - all trixels share the same TMS
+        if len(self._tms_lookup.values()) == 0:
+            logger.critical("TMS unknown!")
+            raise RuntimeError("TMS unknown!")
         tms_info = next(iter(self._tms_lookup.values()))
         await self.sync_with_tms(tms=tms_info)
 
@@ -588,3 +629,82 @@ class Client:
             raise RuntimeError(f"Failed to delete sensor ({sensor_id}) from TMS: {tms.id}")
 
         logger.info(f"Deleted sensor ({sensor_id}) from TMS: {tms.id}")
+
+    def _should_renegotiate(self, sensors: dict[str, str]) -> bool:
+        """
+        Determine if this client should re-negotiate target trixel IDs after measurements submission.
+
+        Ignores recommended trixel re-negotiation, if the max depth has been reached.
+
+        :param sensors: dictionary containing the recommended level change direction for affected sensors
+        :returns: True if target trixels should be re-negotiated
+        """
+        for sensor_id, level_change_str in sensors.items():
+            if level_change_str == TrixelLevelChange.INCREASE:
+
+                target_trixel: PositiveInt | None = None
+                for sensor in self._config.sensors:
+                    if sensor.sensor_id == int(sensor_id):
+                        target_trixel = self._trixel_lookup[sensor.measurement_type]
+
+                if target_trixel is None or HTM.get_level(target_trixel) < self._config.max_depth:
+                    return True
+        return False
+
+    async def publish_values(self, updates: dict[int, tuple[datetime, float]]) -> None:
+        """
+        Publish measurements to the appropriate trixels and TMSs.
+
+        :param updates: dictionary containing the (timestamp,value) for each sensor
+        """
+        if self.is_dead.is_set() or not self._ready.is_set():
+            raise RuntimeError("Updates only allowed if the client is running and ready!")
+
+        # Assumption: only a single TMS is used - all trixels share the same TMS
+        if len(self._tms_lookup.values()) == 0:
+            logger.critical("TMS unknown!")
+            raise RuntimeError("TMS unknown!")
+        tms = next(iter(self._tms_lookup.values()))
+
+        batch_update: Update = Update()
+        for sensor_id, (timestamp, value) in updates.items():
+
+            config_sensor = None
+            for sensor in self._config.sensors:
+                if sensor.sensor_id == sensor_id:
+                    config_sensor = sensor
+
+            if config_sensor is None:
+                raise ValueError(f"Invalid sensor id provided {sensor_id}")
+
+            measurement = TMSMeasurement(sensor_id=sensor_id, timestamp=timestamp, value=value)
+
+            trixel_id = self._trixel_lookup[sensor.measurement_type]
+            if trixel_id not in batch_update:
+                batch_update[trixel_id] = list()
+            batch_update[trixel_id].append(measurement)
+
+        publish_response: TMSResponse = await tms_batch_publish.asyncio_detailed(
+            client=tms.client, token=self._config.ms_config.token, body=batch_update
+        )
+
+        if publish_response.status_code == HTTPStatus.SEE_OTHER:
+            try:
+                content = json.loads(publish_response.content)
+                if content["reason"] == SeeOtherReason.CHANGE_TRIXEL:
+                    if self._should_renegotiate(content["sensors"]):
+                        logger.info("Renegotiating Trixel IDs due to TMS recommendation.")
+                        await self._tls_negotiate_trixel_ids()
+                    return
+                elif content["reason"] == SeeOtherReason.WRONG_TMS:
+                    logger.critical("TMS migration required, but not supported.")
+                    raise NotImplementedError("TMS migration required, but not supported.")
+            except json.JSONDecodeError:
+                logger.warning("Failed to parse SEE_OTHER response.")
+                return
+        if publish_response.status_code == HTTPStatus.NOT_FOUND:
+            logger.critical("Invalid sensor ID sent to TMS. Synchronization required.")
+            raise NotImplementedError("Invalid sensor ID sent to TMS. Synchronization required.")
+        elif publish_response.status_code != HTTPStatus.OK:
+            logger.critical(f"Failed to publish values to TMS: {tms.id}")
+            raise RuntimeError(f"Failed to publish values to TMS: {tms.id}")

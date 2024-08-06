@@ -2,7 +2,7 @@
 
 import enum
 
-from pydantic import UUID4, BaseModel, ConfigDict, PositiveFloat, PositiveInt
+from pydantic import UUID4, BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt
 from pydantic_extra_types.coordinate import Coordinate
 from trixelmanagementclient import Client as TMSClient
 
@@ -12,6 +12,21 @@ class MeasurementType(str, enum.Enum):
 
     AMBIENT_TEMPERATURE = "ambient_temperature"
     RELATIVE_HUMIDITY = "relative_humidity"
+
+
+class SeeOtherReason(str, enum.Enum):
+    """Enum which indicates the reason for a see other message."""
+
+    WRONG_TMS = "wrong_tms"
+    CHANGE_TRIXEL = "change_trixel"
+
+
+class TrixelLevelChange(enum.StrEnum):
+    """Enum which indicates the actions which should be taken by a client to maintain the k-anonymity requirement."""
+
+    KEEP = "keep"
+    INCREASE = "increase"
+    DECREASE = "decrease"
 
 
 class TMSInfo(BaseModel):
@@ -49,6 +64,9 @@ class ClientConfig(BaseModel):
 
     # The anonymity requirement, which should be used when hiding the location via Trixels
     k: PositiveInt
+
+    # The maximum trixel depth to which the client descends
+    max_depth: PositiveInt = Field(24, ge=1, le=24)
 
     tls_host: str
     tls_use_ssl: bool = True
