@@ -2,6 +2,7 @@
 
 import enum
 
+import httpx
 from pydantic import UUID4, BaseModel, ConfigDict, Field, PositiveFloat, PositiveInt
 from pydantic_extra_types.coordinate import Coordinate
 from trixelmanagementclient import Client as TMSClient
@@ -59,6 +60,8 @@ class MeasurementStationConfig(BaseModel):
 class ClientConfig(BaseModel):
     """Configuration schema which defines the behavior of the client."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     # The precise geographic location of the measurement station
     location: Coordinate
 
@@ -68,6 +71,7 @@ class ClientConfig(BaseModel):
     # The maximum trixel depth to which the client descends
     max_depth: PositiveInt = Field(24, ge=1, le=24)
 
+    client_timeout: httpx.Timeout = httpx.Timeout(30.0)
     tls_host: str
     tls_use_ssl: bool = True
     tms_use_ssl: bool = True

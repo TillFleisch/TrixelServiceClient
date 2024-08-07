@@ -56,6 +56,7 @@ from trixelmanagementclient.models import (
 from trixelmanagementclient.models import SensorDetailed
 from trixelmanagementclient.types import Response as TMSResponse
 
+from exception import AuthenticationError, CriticalError, InvalidStateError, ServerError
 from logging_helper import get_logger
 from schema import (
     ClientConfig,
@@ -68,6 +69,28 @@ from schema import (
 )
 
 logger = get_logger(__name__)
+
+
+def assert_valid_result(status_code: HTTPStatus, message: str, target_status_code: HTTPStatus = HTTPStatus.OK) -> None:
+    """
+    Assert that a request result matches the requirement and raise an appropriate exception otherwise.
+
+    :param message: An error message which will be used for exceptions and logging.
+    :param status_code: The status code which was returned by the server.
+    :param target_status_code: The expected status code
+
+    """
+    if status_code >= HTTPStatus.INTERNAL_SERVER_ERROR and not status_code == target_status_code:
+        logger.critical(f"{message}; status code: {status_code}")
+        raise ServerError(message)
+    elif (
+        status_code == HTTPStatus.UNAUTHORIZED or status_code == HTTPStatus.FORBIDDEN
+    ) and not status_code == target_status_code:
+        logger.critical(f"{message}; status code: {status_code}")
+        raise AuthenticationError(message)
+    elif status_code != target_status_code:
+        logger.critical(f"{message}; status code: {status_code} - {type(status_code)}")
+        raise CriticalError(message)
 
 
 class Client:
@@ -104,7 +127,7 @@ class Client:
         Location setter which automatically triggers a trixel ID re-negotiation.
 
         :param location: the new location
-        :returns: True if synchroization with all TMSs was successful, False otherwise
+        :returns: True if synchronization with all TMSs was successful, False otherwise
         """
         logger.debug(f"Changing location to ({location})")
         old_location = self._config.location
@@ -156,6 +179,22 @@ class Client:
         """List of sensors managed by this client."""
         return self._config.sensors
 
+    def get_tms(self) -> TMSInfo:
+        """
+        Get the (single) TMS with which this client is associated.
+
+        Note:
+        As the current client implementation only supports a single TMS, the first registered TMS is retrieved.
+        The underlying assumption is that each trixel and measurement type combination is managed by the same TMS.
+        This may not be the case in a system with multiple TMSs.
+
+        :returns: TMS details
+        """
+        if len(self._tms_lookup.values()) == 0:
+            logger.critical("TMS unknown!")
+            raise CriticalError("TMS unknown!")
+        return next(iter(self._tms_lookup.values()))
+
     async def add_sensor(self, new_senor: Sensor) -> Sensor:
         """
         Add a new sensor to this client and sync with the responsible TMS.
@@ -164,7 +203,7 @@ class Client:
         :returns: The added sensor which contains it's assigned ID
         """
         if self.is_dead.is_set() or not self._ready.is_set():
-            raise RuntimeError("Sensors can only be added when the client is running and ready!")
+            raise InvalidStateError("Sensors can only be added when the client is running and ready!")
 
         if new_senor.sensor_id is not None:
             raise ValueError("Sensor must have undefined ID!")
@@ -178,11 +217,7 @@ class Client:
         await self._update_responsible_tms()
         await self._sync_all_tms()
 
-        # Assumption: only a single TMS is used - all trixels share the same TMS
-        if len(self._tms_lookup.values()) == 0:
-            logger.critical("TMS unknown!")
-            raise RuntimeError("TMS unknown!")
-        tms = next(iter(self._tms_lookup.values()))
+        tms = self.get_tms()
 
         self._ready.clear()
         try:
@@ -220,11 +255,7 @@ class Client:
         self._config.sensors[sensor_index] = new_sensor
 
         if not self.is_dead.is_set() and self._ready.is_set():
-            # Assumption: only a single TMS is used - all trixels share the same TMS
-            if len(self._tms_lookup.values()) == 0:
-                logger.critical("TMS unknown!")
-                raise RuntimeError("TMS unknown!")
-            tms = next(iter(self._tms_lookup.values()))
+            tms = self.get_tms()
             self._ready.clear()
             try:
                 await self._sync_sensors(tms)
@@ -263,11 +294,7 @@ class Client:
         del self._config.sensors[sensor_index]
 
         if not self.is_dead.is_set() and self._ready.is_set():
-            # Assumption: only a single TMS is used - all trixels share the same TMS
-            if len(self._tms_lookup.values()) == 0:
-                logger.critical("TMS unknown!")
-                raise RuntimeError("TMS unknown!")
-            tms = next(iter(self._tms_lookup.values()))
+            tms = self.get_tms()
             self._ready.clear()
             try:
                 await self._sync_sensors(tms)
@@ -311,6 +338,7 @@ class Client:
         tls_major_version = packaging.version.Version(tls_api_version).major
         self._tsl_client = TLSClient(
             base_url=f"http{'s' if self._config.tls_use_ssl else ''}://{config.tls_host}/v{tls_major_version}",
+            timeout=self._config.client_timeout,
         )
 
     def _persist_config(self):
@@ -353,9 +381,9 @@ class Client:
                 client=self._tsl_client, trixel_id=trixel_id, types=types
             )
 
-            if trixel_info.status_code != HTTPStatus.OK:
-                logger.critical(f"Failed to negotiate trixel IDs. - {trixel_info.content}")
-                raise RuntimeError(f"Failed to negotiate trixel IDs. - {trixel_info.content}")
+            assert_valid_result(
+                message=f"Failed to negotiate trixel IDs. - {trixel_info.content}", status_code=trixel_info.status_code
+            )
 
             trixel_info: TrixelMap = trixel_info.parsed
 
@@ -388,30 +416,31 @@ class Client:
                 client=self._tsl_client, trixel_id=trixel_id
             )
 
-            if tms_response.status_code != HTTPStatus.OK:
-                logger.critical(f"Failed to retrieve TMS responsible for trixel {trixel_id})")
-                raise RuntimeError(
-                    f"Failed to retrieve TMS responsible for trixel {trixel_id}): - {tms_response.content}"
-                )
+            assert_valid_result(
+                message=f"Failed to retrieve TMS responsible for trixel {trixel_id}): - {tms_response.content}",
+                status_code=tms_response.status_code,
+            )
 
             tms = tms_response.parsed
 
-            if tms is None:
-                raise RuntimeError(f"No TMS available for trixel {trixel_id}!")
-
             tms_ids = set([x.id for x in self._tms_lookup.values()])
             if len(tms_ids) > 0 and tms.id not in tms_ids:
-                raise NotImplementedError("Only single TMS supported!")
+                raise CriticalError("Only single TMS supported!")
 
             if self._config.tms_address_override is not None:
-                client = TMSClient(base_url=f"http{tms_ssl}://{self._config.tms_address_override}/v{tms_major_version}")
+                client = TMSClient(
+                    base_url=f"http{tms_ssl}://{self._config.tms_address_override}/v{tms_major_version}",
+                    timeout=self._config.client_timeout,
+                )
             else:
-                client = TMSClient(base_url=f"http{tms_ssl}://{tms.host}/v{tms_major_version}")
+                client = TMSClient(
+                    base_url=f"http{tms_ssl}://{tms.host}/v{tms_major_version}", timeout=self._config.client_timeout
+                )
             self._tms_lookup[trixel_id] = TMSInfo(id=tms.id, client=client, host=tms.host)
 
         if len(self._tms_lookup.values()) == 0:
             logger.critical("TMS unknown!")
-            raise RuntimeError("TMS unknown!")
+            raise CriticalError("TMS unknown!")
 
         # Validate retrieved TMSs are available
         checked_tms_ids = set()
@@ -422,9 +451,10 @@ class Client:
             checked_tms_ids.add(tms_info.id)
 
             tms_ping: TMSResponse[TMSPing] = await tms_get_ping.asyncio_detailed(client=tms_info.client)
-            if tms_ping.status_code != HTTPStatus.OK:
-                logger.critical(f"Failed to ping TMS(id:{tms_info.id} host: {tms_info.host})")
-                raise RuntimeError(f"Failed to ping TMS(id:{tms_info.id} host: {tms_info.host}): {tms_ping.content}")
+            assert_valid_result(
+                message=f"Failed to ping TMS(id:{tms_info.id} host: {tms_info.host}): {tms_ping.content}",
+                status_code=tms_ping.status_code,
+            )
 
             logger.info(f"Retrieved valid TMS(id:{tms_info.id} host: {tms_info.host}).")
 
@@ -439,36 +469,36 @@ class Client:
             client=tms.client, k_requirement=self._config.k
         )
 
-        if register_response.status_code != HTTPStatus.CREATED:
-            logger.critical(f"Failed to register at TMS. - {register_response.content}")
-            raise RuntimeError(f"Failed to register at TMS. - {register_response.content}")
+        assert_valid_result(
+            message=f"Failed to register at TMS. - {register_response.content}",
+            status_code=register_response.status_code,
+            target_status_code=HTTPStatus.CREATED,
+        )
 
         register_response: MeasurementStationCreate = register_response.parsed
 
         if register_response.k_requirement != self._config.k:
             logger.critical("TMS not using desired k-requirement.")
-            raise RuntimeError("TMS not using desired k-requirement.")
+            raise CriticalError("TMS not using desired k-requirement.")
 
         return MeasurementStationConfig(uuid=register_response.uuid, token=register_response.token)
 
     async def delete(self):
         """Remove this measurement station from all TMS where it's registered."""
         if self.is_dead.is_set() or not self._ready.is_set():
-            raise RuntimeError("Deletion only allowed if the client is running and ready!")
+            raise InvalidStateError("Deletion only allowed if the client is running and ready!")
 
-        # Assumption: only a single TMS is used - all trixels share the same TMS
-        if len(self._tms_lookup.values()) == 0:
-            logger.critical("TMS unknown!")
-            raise RuntimeError("TMS unknown!")
-        tms = next(iter(self._tms_lookup.values()))
+        tms = self.get_tms()
 
         delete_response: TMSResponse = await tms_delete_station.asyncio_detailed(
             client=tms.client, token=self._config.ms_config.token
         )
 
-        if delete_response.status_code != HTTPStatus.NO_CONTENT:
-            logger.critical(f"Failed to delete measurement station at TMS: {tms.id}")
-            raise RuntimeError(f"Failed to delete measurement station at TMS: {tms.id}")
+        assert_valid_result(
+            message=f"Failed to delete measurement station at TMS: {tms.id}",
+            status_code=delete_response.status_code,
+            target_status_code=HTTPStatus.NO_CONTENT,
+        )
 
         self._config.ms_config = None
         self._config.sensors = list()
@@ -478,12 +508,8 @@ class Client:
 
     async def _sync_all_tms(self):
         """Synchronize this client with all TMSs."""
-        # Assumption: only a single TMS is used - all trixels share the same TMS
-        if len(self._tms_lookup.values()) == 0:
-            logger.critical("TMS unknown!")
-            raise RuntimeError("TMS unknown!")
-        tms_info = next(iter(self._tms_lookup.values()))
-        await self.sync_with_tms(tms=tms_info)
+        tms = self.get_tms()
+        await self.sync_with_tms(tms=tms)
 
     async def sync_with_tms(self, tms: TMSInfo):
         """Synchronize this client with the desired TMS."""
@@ -509,9 +535,9 @@ class Client:
             token=self._config.ms_config.token,
         )
 
-        if detail_response.status_code != HTTPStatus.OK:
-            logger.critical(f"Failed to fetch details from TMS: {tms.id}")
-            raise RuntimeError(f"Failed to fetch details from TMS: {tms.id}")
+        assert_valid_result(
+            message=f"Failed to fetch details from TMS: {tms.id}", status_code=detail_response.status_code
+        )
 
         detail_response: MeasurementStation = detail_response.parsed
 
@@ -520,9 +546,12 @@ class Client:
                 client=tms.client, token=self._config.ms_config.token, k_requirement=self._config.k
             )
 
-            if update_response.status_code != HTTPStatus.OK or update_response.parsed.k_requirement != self._config.k:
+            assert_valid_result(
+                message=f"Failed to synchronize settings with TMS: {tms.id}", status_code=update_response.status_code
+            )
+            if update_response.parsed.k_requirement != self._config.k:
                 logger.critical(f"Failed to synchronize settings with TMS: {tms.id}")
-                raise RuntimeError(f"Failed to synchronize settings with TMS: {tms.id}")
+                raise ServerError(f"Failed to synchronize settings with TMS: {tms.id}")
 
     async def _sync_sensors(self, tms: TMSInfo):
         """
@@ -534,9 +563,10 @@ class Client:
             client=tms.client, token=self._config.ms_config.token
         )
 
-        if sensors_response.status_code != HTTPStatus.OK:
-            logger.critical(f"Failed to retrieve registered sensors from TMS: {tms.id}")
-            raise RuntimeError(f"Failed to retrieve registered sensors from TMS: {tms.id}")
+        assert_valid_result(
+            message=f"Failed to retrieve registered sensors from TMS: {tms.id}",
+            status_code=sensors_response.status_code,
+        )
 
         existing_sensors: list[SensorDetailed] = sensors_response.parsed
 
@@ -599,9 +629,11 @@ class Client:
             sensor_name=sensor.sensor_name,
         )
 
-        if add_sensor_response.status_code != HTTPStatus.CREATED:
-            logger.critical(f"Failed to retrieve registered sensors from TMS: {tms.id}")
-            raise RuntimeError(f"Failed to retrieve registered sensors from TMS: {tms.id}")
+        assert_valid_result(
+            message=f"Failed to retrieve registered sensors from TMS: {tms.id}",
+            status_code=add_sensor_response.status_code,
+            target_status_code=HTTPStatus.CREATED,
+        )
 
         new_sensor: SensorDetailed = add_sensor_response.parsed
         logger.info(f"Added new sensor ({new_sensor.id}) to TMS {tms.id}.")
@@ -624,9 +656,11 @@ class Client:
             client=tms.client, token=self._config.ms_config.token, sensor_id=sensor_id
         )
 
-        if delete_sensor_response.status_code != HTTPStatus.NO_CONTENT:
-            logger.critical(f"Failed to delete sensor ({sensor_id}) from TMS: {tms.id}")
-            raise RuntimeError(f"Failed to delete sensor ({sensor_id}) from TMS: {tms.id}")
+        assert_valid_result(
+            message=f"Failed to delete sensor ({sensor_id}) from TMS: {tms.id}",
+            status_code=delete_sensor_response.status_code,
+            target_status_code=HTTPStatus.NO_CONTENT,
+        )
 
         logger.info(f"Deleted sensor ({sensor_id}) from TMS: {tms.id}")
 
@@ -658,13 +692,9 @@ class Client:
         :param updates: dictionary containing the (timestamp,value) for each sensor
         """
         if self.is_dead.is_set() or not self._ready.is_set():
-            raise RuntimeError("Updates only allowed if the client is running and ready!")
+            raise InvalidStateError("Updates only allowed if the client is running and ready!")
 
-        # Assumption: only a single TMS is used - all trixels share the same TMS
-        if len(self._tms_lookup.values()) == 0:
-            logger.critical("TMS unknown!")
-            raise RuntimeError("TMS unknown!")
-        tms = next(iter(self._tms_lookup.values()))
+        tms = self.get_tms()
 
         batch_update: Update = Update()
         for sensor_id, (timestamp, value) in updates.items():
@@ -705,6 +735,6 @@ class Client:
         if publish_response.status_code == HTTPStatus.NOT_FOUND:
             logger.critical("Invalid sensor ID sent to TMS. Synchronization required.")
             raise NotImplementedError("Invalid sensor ID sent to TMS. Synchronization required.")
-        elif publish_response.status_code != HTTPStatus.OK:
-            logger.critical(f"Failed to publish values to TMS: {tms.id}")
-            raise RuntimeError(f"Failed to publish values to TMS: {tms.id}")
+        assert_valid_result(
+            message=f"Failed to publish values to TMS: {tms.id}", status_code=publish_response.status_code
+        )
