@@ -325,7 +325,7 @@ class Client:
         """
         return self._dead
 
-    def __init__(self, config: ClientConfig, config_persister: Callable[[ClientConfig], None]):
+    def __init__(self, config: ClientConfig, config_persister: Callable[[ClientConfig], None] | None):
         """Initialize the client with the given config."""
         self._config = config
         self._config_persister = config_persister
@@ -343,8 +343,9 @@ class Client:
 
     def _persist_config(self):
         """Call the user defined configuration persist method."""
-        logger.debug("Persisting client configuration.")
-        return self._config_persister(self._config)
+        if self._config_persister is not None:
+            logger.debug("Persisting client configuration.")
+            self._config_persister(self._config)
 
     async def start(self):
         """Start the client, registers or resumes work at the responsible TMS."""
