@@ -224,10 +224,10 @@ class Client:
             await self._sync_sensors(tms)
             self._persist_config()
             self._ready.set()
-        except Exception as e:
+        except Exception:
             logger.warning(f"Failed to add sensor: {new_senor.sensor_id}!")
             self._config.sensors.pop()
-            raise e
+            raise
 
         return self._config.sensors[new_sensor_index]
 
@@ -261,10 +261,10 @@ class Client:
                 await self._sync_sensors(tms)
                 self._persist_config()
                 self._ready.set()
-            except Exception as e:
+            except Exception:
                 logger.warning(f"Failed to update sensor: {new_sensor.sensor_id}!")
                 self._config.sensors[sensor_index] = old_sensor
-                raise e
+                raise
         else:
             self._persist_config()
 
@@ -300,10 +300,10 @@ class Client:
                 await self._sync_sensors(tms)
                 self._persist_config()
                 self._ready.set()
-            except Exception as e:
+            except Exception:
                 logger.warning(f"Failed to delete sensor {old_sensor.sensor_id}!")
                 self._config.sensors.append(old_sensor)
-                raise e
+                raise
         else:
             self._persist_config()
 
@@ -346,7 +346,7 @@ class Client:
         logger.debug("Persisting client configuration.")
         return self._config_persister(self._config)
 
-    async def run(self):
+    async def start(self):
         """Start the client, registers or resumes work at the responsible TMS."""
         self._dead.clear()
 
@@ -355,6 +355,11 @@ class Client:
         await self._sync_all_tms()
 
         self._ready.set()
+
+    def kill(self) -> None:
+        """Set the dead lock to gracefully kill this client and other related entities."""
+        self._ready.clear()
+        self._dead.set()
 
     async def _tls_negotiate_trixel_ids(self):
         """Negotiate the smallest trixels for each measurement type which satisfies the k requirement."""
