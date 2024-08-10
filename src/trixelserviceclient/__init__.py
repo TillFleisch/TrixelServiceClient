@@ -56,9 +56,14 @@ from trixelmanagementclient.models import (
 from trixelmanagementclient.models import SensorDetailed
 from trixelmanagementclient.types import Response as TMSResponse
 
-from exception import AuthenticationError, CriticalError, InvalidStateError, ServerError
-from logging_helper import get_logger
-from schema import (
+from .exception import (
+    AuthenticationError,
+    CriticalError,
+    InvalidStateError,
+    ServerError,
+)
+from .logging_helper import get_logger
+from .schema import (
     ClientConfig,
     MeasurementStationConfig,
     MeasurementType,

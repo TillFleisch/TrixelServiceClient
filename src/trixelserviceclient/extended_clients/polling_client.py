@@ -8,9 +8,9 @@ from typing import Callable
 import httpx
 from pydantic import NonNegativeInt, PositiveInt
 
-from exception import ServerError
-from logging_helper import get_logger
-from trixelserviceclient import Client
+from .. import Client
+from ..exception import ServerError
+from ..logging_helper import get_logger
 
 logger = get_logger(__name__)
 

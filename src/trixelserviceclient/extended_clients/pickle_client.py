@@ -4,9 +4,9 @@ import pickle
 
 from pydantic import FilePath
 
-from polling_client import PollingClient
-from schema import ClientConfig
-from trixelserviceclient import Client
+from .. import Client
+from ..schema import ClientConfig
+from .polling_client import PollingClient
 
 
 class PickleClient(Client):
