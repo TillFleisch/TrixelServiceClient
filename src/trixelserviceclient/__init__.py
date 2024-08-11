@@ -694,6 +694,8 @@ class Client:
 
                 if target_trixel is None or HTM.get_level(target_trixel) < self._config.max_depth:
                     return True
+            if level_change_str == TrixelLevelChange.DECREASE:
+                return True
         return False
 
     async def publish_values(self, updates: dict[int, tuple[datetime, float]]) -> None:
