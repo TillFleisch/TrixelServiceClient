@@ -370,6 +370,10 @@ class Client:
     async def _tls_negotiate_trixel_ids(self):
         """Negotiate the smallest trixels for each measurement type which satisfies the k requirement."""
         types = set()
+
+        if len(self._config.sensors) == 0:
+            raise CriticalError("Cannot determine TMS without sensor configuration.")
+
         for sensor in self._config.sensors:
             types.add(sensor.measurement_type)
 
@@ -749,5 +753,6 @@ class Client:
             logger.critical("Invalid sensor ID sent to TMS. Synchronization required.")
             raise NotImplementedError("Invalid sensor ID sent to TMS. Synchronization required.")
         assert_valid_result(
-            message=f"Failed to publish values to TMS: {tms.id}", status_code=publish_response.status_code
-        )
+            message=f"Failed to publish values to TMS: {tms.id} - {publish_response}",
+            status_code=publish_response.status_code,
+        )  # TODO: remove modificution

@@ -24,6 +24,7 @@ class PollingClient(Client):
         retry_interval: timedelta = timedelta(seconds=30),
         max_retries: PositiveInt | None = 10,
         polling_interval: timedelta = timedelta(seconds=60),
+        delete: bool = False,
     ):
         """
         Run the client by initializing it using `start` and providing sensor updates in fixed intervals.
@@ -39,6 +40,7 @@ class PollingClient(Client):
         state
         :param max_retries: maximum number of retries before aborting, endless retries if None
         :param polling_interval: time period which determines how often sensor values are published
+        :param delete: if set to true, the sensor will be delete from the TMS once it's ready
         """
         retries: NonNegativeInt = 1
         last_ready: datetime = datetime.now() - retry_interval * 2
@@ -66,7 +68,11 @@ class PollingClient(Client):
                 if last_ready - last_update > polling_interval:
                     last_update = datetime.now()
                     try:
-                        await self.publish_values(updates=get_updates())
+                        if not delete:
+                            await self.publish_values(updates=get_updates())
+                        else:
+                            await self.delete()
+                            return
                     except (ServerError, InvalidStateError, httpx.HTTPError) as e:
                         logger.warning(f"Failed to publish values: {e}")
                     except Exception:
