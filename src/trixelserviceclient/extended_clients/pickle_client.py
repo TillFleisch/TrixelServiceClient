@@ -1,8 +1,7 @@
 """Client implementations which persist configuration changes using pickle."""
 
+import os
 import pickle
-
-from pydantic import FilePath
 
 from .. import Client
 from ..schema import ClientConfig
@@ -12,9 +11,9 @@ from .polling_client import PollingClient
 class PickleClient(Client):
     """A pickle based client implementation which pickles the client configuration to persist it."""
 
-    pickle_path: FilePath
+    pickle_path: os.PathLike
 
-    def __init__(self, file_path: FilePath, config: ClientConfig | None = None, override_config: bool = False):
+    def __init__(self, file_path: os.PathLike, config: ClientConfig | None = None, override_config: bool = False):
         """
         Load the configuration from a pickle file or use the provided config.
 

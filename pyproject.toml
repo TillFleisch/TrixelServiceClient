@@ -21,8 +21,6 @@ license = { file = "LICENSE" }
 keywords = ["trixel", "private", "privacy focused","environmental monitoring", "sensor network"]
 dependencies = [
     'tomli; python_version < "3.11"',
-    'pydantic',
-    'pydantic-extra-types',
     'packaging',
     'pynyhtm',
     'trixellookupclient',

@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 from typing import Callable
 
 import httpx
-from pydantic import NonNegativeInt, PositiveInt
 
 from .. import Client
 from ..exception import ServerError
@@ -22,7 +21,7 @@ class PollingClient(Client):
         self,
         get_updates: Callable[[], dict[int, tuple[datetime, float]]],
         retry_interval: timedelta = timedelta(seconds=30),
-        max_retries: PositiveInt | None = 10,
+        max_retries: int | None = 10,
         polling_interval: timedelta = timedelta(seconds=60),
         delete: bool = False,
     ):
@@ -42,7 +41,7 @@ class PollingClient(Client):
         :param polling_interval: time period which determines how often sensor values are published
         :param delete: if set to true, the sensor will be delete from the TMS once it's ready
         """
-        retries: NonNegativeInt = 1
+        retries: int = 1
         last_ready: datetime = datetime.now() - retry_interval * 2
         last_update: datetime = datetime.now() - polling_interval * 2
         while not self.is_dead.is_set():

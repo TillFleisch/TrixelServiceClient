@@ -9,8 +9,6 @@ from typing import Callable
 
 import packaging.version
 import pynyhtm
-from pydantic import PositiveInt
-from pydantic_extra_types.coordinate import Coordinate
 from pynyhtm import HTM
 from trixellookupclient import Client as TLSClient
 from trixellookupclient.api.trixel_information import (
@@ -65,6 +63,7 @@ from .exception import (
 from .logging_helper import get_logger
 from .schema import (
     ClientConfig,
+    Coordinate,
     MeasurementStationConfig,
     MeasurementType,
     SeeOtherReason,
@@ -152,11 +151,11 @@ class Client:
             return False
 
     @property
-    def k(self) -> PositiveInt:
+    def k(self) -> int:
         """K anonymity requirement property getter."""
         return self._config.k
 
-    async def set_k(self, k: PositiveInt) -> bool:
+    async def set_k(self, k: int) -> bool:
         """
         K anonymity requirement setter which synchronies with the TMS.
 
@@ -691,7 +690,7 @@ class Client:
         for sensor_id, level_change_str in sensors.items():
             if level_change_str == TrixelLevelChange.INCREASE:
 
-                target_trixel: PositiveInt | None = None
+                target_trixel: int | None = None
                 for sensor in self._config.sensors:
                     if sensor.sensor_id == int(sensor_id):
                         target_trixel = self._trixel_lookup[sensor.measurement_type]
