@@ -7,6 +7,7 @@ from datetime import datetime
 from http import HTTPStatus
 from typing import Callable
 
+import httpx
 import packaging.version
 import pynyhtm
 from pynyhtm import HTM
@@ -342,7 +343,7 @@ class Client:
         tls_major_version = packaging.version.Version(tls_api_version).major
         self._tsl_client = TLSClient(
             base_url=f"http{'s' if self._config.tls_use_ssl else ''}://{config.tls_host}/v{tls_major_version}",
-            timeout=self._config.client_timeout,
+            timeout=httpx.Timeout(self._config.client_timeout),
         )
 
     def _persist_config(self):
@@ -444,11 +445,12 @@ class Client:
             if self._config.tms_address_override is not None:
                 client = TMSClient(
                     base_url=f"http{tms_ssl}://{self._config.tms_address_override}/v{tms_major_version}",
-                    timeout=self._config.client_timeout,
+                    timeout=httpx.Timeout(self._config.client_timeout),
                 )
             else:
                 client = TMSClient(
-                    base_url=f"http{tms_ssl}://{tms.host}/v{tms_major_version}", timeout=self._config.client_timeout
+                    base_url=f"http{tms_ssl}://{tms.host}/v{tms_major_version}",
+                    timeout=httpx.Timeout(self._config.client_timeout),
                 )
             self._tms_lookup[trixel_id] = TMSInfo(id=tms.id, client=client, host=tms.host)
 

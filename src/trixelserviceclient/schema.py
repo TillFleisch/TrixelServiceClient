@@ -1,9 +1,9 @@
 """Global schemas related to the trixel service client."""
 
 import enum
+from dataclasses import dataclass
 from uuid import UUID
 
-import httpx
 from trixelmanagementclient import Client as TMSClient
 
 
@@ -43,6 +43,7 @@ class TMSInfo:
         self.client = client
 
 
+@dataclass
 class Sensor:
     """Schema for describing sensors including details."""
 
@@ -65,6 +66,7 @@ class Sensor:
         self.sensor_id = sensor_id
 
 
+@dataclass
 class MeasurementStationConfig:
     """Measurement station details which are used for authentication at the TMS."""
 
@@ -77,11 +79,12 @@ class MeasurementStationConfig:
         self.token = token
 
 
+@dataclass
 class Coordinate:
     """Simple coordinate class which holds latitude and longitude information."""
 
-    _latitude: float = 0
-    _longitude: float = 0
+    latitude: float = 0
+    longitude: float = 0
 
     def __init__(self, latitude: float, longitude: float):
         """Initialize this coordinate object."""
@@ -89,12 +92,12 @@ class Coordinate:
         self.longitude = longitude
 
     @property
-    def latitude(self) -> int:
+    def latitude(self) -> int:  # noqa: F811
         """Get the latitude of this coordinate object."""
         return self._latitude
 
     @property
-    def longitude(self) -> int:
+    def longitude(self) -> int:  # noqa: F811
         """Get the longitude of this coordinate object."""
         return self._longitude
 
@@ -113,6 +116,7 @@ class Coordinate:
         self._longitude = value
 
 
+@dataclass
 class ClientConfig:
     """Configuration schema which defines the behavior of the client."""
 
@@ -122,16 +126,17 @@ class ClientConfig:
     # The anonymity requirement, which should be used when hiding the location via Trixels
     k: int
 
-    # The maximum trixel depth to which the client descends
-    _max_depth: int = 24
-
-    client_timeout: httpx.Timeout = httpx.Timeout(30.0)
     tls_host: str
+    sensors: list[Sensor]
+
+    # The maximum trixel depth to which the client descends
+    max_depth: int = 24
+
+    client_timeout: float = 30.0
     tls_use_ssl: bool = True
     tms_use_ssl: bool = True
     tms_address_override: str | None = None
     ms_config: MeasurementStationConfig | None = None
-    sensors: list[Sensor] = list()
 
     def __init__(
         self,
@@ -139,7 +144,7 @@ class ClientConfig:
         k: int,
         tls_host: str,
         max_depth: int = 24,
-        client_timeout: httpx.Timeout = httpx.Timeout(30.0),
+        client_timeout: float = 30.0,
         tls_use_ssl: bool = True,
         tms_use_ssl: bool = True,
         tms_address_override: str | None = None,
@@ -159,7 +164,7 @@ class ClientConfig:
         self.sensors = sensors
 
     @property
-    def max_depth(self):
+    def max_depth(self):  # noqa: F811
         """Get the current max depth of this client config."""
         return self._max_depth
 
