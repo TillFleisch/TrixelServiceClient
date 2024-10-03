@@ -142,10 +142,10 @@ class Client:
                 self._ready.clear()
                 await self._tls_negotiate_trixel_ids()
                 await self._update_responsible_tms()
-                self._persist_config()
+                await self._persist_config()
                 self._ready.set()
             else:
-                self._persist_config()
+                await self._persist_config()
             return True
         except Exception:
             self._config.location = old_location
@@ -170,10 +170,10 @@ class Client:
             if not self.is_dead.is_set() and self._ready.is_set():
                 self._ready.clear()
                 await self._sync_all_tms()
-                self._persist_config()
+                await self._persist_config()
                 self._ready.set()
             else:
-                self._persist_config()
+                await self._persist_config()
             return True
         except Exception:
             self._config.k = old_k
@@ -227,7 +227,7 @@ class Client:
         self._ready.clear()
         try:
             await self._sync_sensors(tms)
-            self._persist_config()
+            await self._persist_config()
             self._ready.set()
         except Exception:
             logger.warning(f"Failed to add sensor: {new_senor.sensor_id}!")
@@ -264,14 +264,14 @@ class Client:
             self._ready.clear()
             try:
                 await self._sync_sensors(tms)
-                self._persist_config()
+                await self._persist_config()
                 self._ready.set()
             except Exception:
                 logger.warning(f"Failed to update sensor: {new_sensor.sensor_id}!")
                 self._config.sensors[sensor_index] = old_sensor
                 raise
         else:
-            self._persist_config()
+            await self._persist_config()
 
         logger.debug(f"Updated sensor {new_sensor.sensor_id}")
         return self._config.sensors[sensor_index]
@@ -303,14 +303,14 @@ class Client:
             self._ready.clear()
             try:
                 await self._sync_sensors(tms)
-                self._persist_config()
+                await self._persist_config()
                 self._ready.set()
             except Exception:
                 logger.warning(f"Failed to delete sensor {old_sensor.sensor_id}!")
                 self._config.sensors.append(old_sensor)
                 raise
         else:
-            self._persist_config()
+            await self._persist_config()
 
     @property
     def is_ready(self) -> asyncio.Event:
@@ -346,7 +346,7 @@ class Client:
             timeout=httpx.Timeout(self._config.client_timeout),
         )
 
-    def _persist_config(self):
+    async def _persist_config(self):
         """Call the user defined configuration persist method."""
         if self._config_persister is not None:
             logger.debug("Persisting client configuration.")
@@ -518,7 +518,7 @@ class Client:
 
         self._config.ms_config = None
         self._config.sensors = list()
-        self._persist_config()
+        await self._persist_config()
         logger.info(f"Removed measurement station from TMS {tms.id}.")
         self._dead.set()
 
@@ -533,7 +533,7 @@ class Client:
 
         if ms_config is None:
             self._config.ms_config = await self._register_at_tms(tms)
-            self._persist_config()
+            await self._persist_config()
 
         await self._sync_station_properties(tms)
         await self._sync_sensors(tms)
@@ -622,12 +622,12 @@ class Client:
             sensor = self._config.sensors[idx]
             await self._tms_delete_sensor(tms, sensor.sensor_id)
             self._config.sensors[idx] = await self._tms_add_sensor(tms, sensor)
-            self._persist_config()
+            await self._persist_config()
 
         # Add new sensors to TMS
         for idx in missing_sensor_indices:
             self._config.sensors[idx] = await self._tms_add_sensor(tms, sensor)
-            self._persist_config()
+            await self._persist_config()
 
     async def _tms_add_sensor(self, tms: TMSInfo, sensor: Sensor) -> Sensor:
         """
@@ -756,4 +756,4 @@ class Client:
         assert_valid_result(
             message=f"Failed to publish values to TMS: {tms.id} - {publish_response}",
             status_code=publish_response.status_code,
-        )  # TODO: remove modificution
+        )

@@ -33,9 +33,13 @@ class PickleClient(Client):
         super().__init__(config, None)
 
         if override_config:
-            self._persist_config()
+            self._sync_persist_config()
 
-    def _persist_config(self):
+    async def _persist_config(self):
+        """Persist the clients configuration using pickle at the desired path."""
+        self._sync_persist_config()
+
+    def _sync_persist_config(self):
         """Persist the clients configuration using pickle at the desired path."""
         file = open(self.pickle_path, "wb")
         pickle.dump(self._config, file)
