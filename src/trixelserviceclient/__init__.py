@@ -1,6 +1,7 @@
 """Simple client for the trixel based environmental observation sensor network."""
 
 import asyncio
+import contextlib
 import importlib
 import json
 from datetime import datetime
@@ -76,7 +77,9 @@ from .schema import (
 logger = get_logger(__name__)
 
 
-def assert_valid_result(status_code: HTTPStatus, message: str, target_status_code: HTTPStatus = HTTPStatus.OK) -> None:
+def assert_valid_result(
+    response: TLSResponse | TMSResponse, message: str, target_status_code: HTTPStatus = HTTPStatus.OK
+) -> None:
     """
     Assert that a request result matches the requirement and raise an appropriate exception otherwise.
 
@@ -85,16 +88,23 @@ def assert_valid_result(status_code: HTTPStatus, message: str, target_status_cod
     :param target_status_code: The expected status code
 
     """
+    status_code: HTTPStatus = response.status_code
+    detail = ""
+    if response.content is not None and (decoded_content := response.content.decode()):
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
+            if (json_content := json.loads(decoded_content)) and "detail" in json_content:
+                detail = f", Detail: {json_content['detail']}"
+
     if status_code >= HTTPStatus.INTERNAL_SERVER_ERROR and not status_code == target_status_code:
-        logger.critical(f"{message}; status code: {status_code}")
+        logger.critical(f"{message}, status code: {status_code}{detail}")
         raise ServerError(message)
     elif (
         status_code == HTTPStatus.UNAUTHORIZED or status_code == HTTPStatus.FORBIDDEN
     ) and not status_code == target_status_code:
-        logger.critical(f"{message}; status code: {status_code}")
+        logger.critical(f"{message}, status code: {status_code}{detail}")
         raise AuthenticationError(message)
     elif status_code != target_status_code:
-        logger.critical(f"{message}; status code: {status_code} - {type(status_code)}")
+        logger.critical(f"{message}, status code: {status_code}{detail}")
         raise CriticalError(message)
 
 
@@ -396,9 +406,7 @@ class Client:
                 client=self._tsl_client, trixel_id=trixel_id, types=types
             )
 
-            assert_valid_result(
-                message=f"Failed to negotiate trixel IDs. - {trixel_info.content}", status_code=trixel_info.status_code
-            )
+            assert_valid_result(message="Failed to negotiate trixel IDs", response=trixel_info)
 
             trixel_info: TrixelMap = trixel_info.parsed
 
@@ -432,8 +440,7 @@ class Client:
             )
 
             assert_valid_result(
-                message=f"Failed to retrieve TMS responsible for trixel {trixel_id}): - {tms_response.content}",
-                status_code=tms_response.status_code,
+                message=f"Failed to retrieve TMS responsible for trixel {trixel_id})", response=tms_response
             )
 
             tms = tms_response.parsed
@@ -468,8 +475,7 @@ class Client:
 
             tms_ping: TMSResponse[TMSPing] = await tms_get_ping.asyncio_detailed(client=tms_info.client)
             assert_valid_result(
-                message=f"Failed to ping TMS(id:{tms_info.id} host: {tms_info.host}): {tms_ping.content}",
-                status_code=tms_ping.status_code,
+                message=f"Failed to ping TMS(id:{tms_info.id} host: {tms_info.host})", response=tms_ping
             )
 
             logger.info(f"Retrieved valid TMS(id:{tms_info.id} host: {tms_info.host}).")
@@ -486,9 +492,7 @@ class Client:
         )
 
         assert_valid_result(
-            message=f"Failed to register at TMS. - {register_response.content}",
-            status_code=register_response.status_code,
-            target_status_code=HTTPStatus.CREATED,
+            message="Failed to register at TMS", response=register_response, target_status_code=HTTPStatus.CREATED
         )
 
         register_response: MeasurementStationCreate = register_response.parsed
@@ -512,7 +516,7 @@ class Client:
 
         assert_valid_result(
             message=f"Failed to delete measurement station at TMS: {tms.id}",
-            status_code=delete_response.status_code,
+            response=delete_response,
             target_status_code=HTTPStatus.NO_CONTENT,
         )
 
@@ -551,9 +555,7 @@ class Client:
             token=self._config.ms_config.token,
         )
 
-        assert_valid_result(
-            message=f"Failed to fetch details from TMS: {tms.id}", status_code=detail_response.status_code
-        )
+        assert_valid_result(message=f"Failed to fetch details from TMS: {tms.id}", response=detail_response)
 
         detail_response: MeasurementStation = detail_response.parsed
 
@@ -562,9 +564,7 @@ class Client:
                 client=tms.client, token=self._config.ms_config.token, k_requirement=self._config.k
             )
 
-            assert_valid_result(
-                message=f"Failed to synchronize settings with TMS: {tms.id}", status_code=update_response.status_code
-            )
+            assert_valid_result(message=f"Failed to synchronize settings with TMS: {tms.id}", response=update_response)
             if update_response.parsed.k_requirement != self._config.k:
                 logger.critical(f"Failed to synchronize settings with TMS: {tms.id}")
                 raise ServerError(f"Failed to synchronize settings with TMS: {tms.id}")
@@ -581,7 +581,7 @@ class Client:
 
         assert_valid_result(
             message=f"Failed to retrieve registered sensors from TMS: {tms.id}",
-            status_code=sensors_response.status_code,
+            response=sensors_response,
         )
 
         existing_sensors: list[SensorDetailed] = sensors_response.parsed
@@ -647,7 +647,7 @@ class Client:
 
         assert_valid_result(
             message=f"Failed to retrieve registered sensors from TMS: {tms.id}",
-            status_code=add_sensor_response.status_code,
+            response=add_sensor_response,
             target_status_code=HTTPStatus.CREATED,
         )
 
@@ -674,7 +674,7 @@ class Client:
 
         assert_valid_result(
             message=f"Failed to delete sensor ({sensor_id}) from TMS: {tms.id}",
-            status_code=delete_sensor_response.status_code,
+            response=delete_sensor_response,
             target_status_code=HTTPStatus.NO_CONTENT,
         )
 
@@ -753,7 +753,4 @@ class Client:
         if publish_response.status_code == HTTPStatus.NOT_FOUND:
             logger.critical("Invalid sensor ID sent to TMS. Synchronization required.")
             raise NotImplementedError("Invalid sensor ID sent to TMS. Synchronization required.")
-        assert_valid_result(
-            message=f"Failed to publish values to TMS: {tms.id} - {publish_response}",
-            status_code=publish_response.status_code,
-        )
+        assert_valid_result(message=f"Failed to publish values to TMS: {tms.id}", response=publish_response)
