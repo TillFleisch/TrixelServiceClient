@@ -618,7 +618,7 @@ class Client:
         # Update existing sensors if there are config changes on the client side
         for idx in update_sensor_indices:
             # TODO: update sensor config at the TMS (not implemented)
-            logger.warn("Replacing sensor due to configuration change!")
+            logger.warning("Replacing sensor due to configuration change!")
             sensor = self._config.sensors[idx]
             await self._tms_delete_sensor(tms, sensor.sensor_id)
             self._config.sensors[idx] = await self._tms_add_sensor(tms, sensor)
@@ -626,6 +626,7 @@ class Client:
 
         # Add new sensors to TMS
         for idx in missing_sensor_indices:
+            sensor = self._config.sensors[idx]
             self._config.sensors[idx] = await self._tms_add_sensor(tms, sensor)
             await self._persist_config()
 
@@ -654,12 +655,12 @@ class Client:
         new_sensor: SensorDetailed = add_sensor_response.parsed
         logger.info(f"Added new sensor ({new_sensor.id}) to TMS {tms.id}.")
 
-        return Sensor(
-            sensor_id=new_sensor.id,
-            measurement_type=new_sensor.measurement_type,
-            accuracy=new_sensor.details.accuracy,
-            sensor_name=new_sensor.details.sensor_name,
-        )
+        sensor.sensor_id = new_sensor.id
+        sensor.measurement_type = new_sensor.measurement_type
+        sensor.accuracy = new_sensor.details.accuracy
+        sensor.sensor_name = new_sensor.details.sensor_name
+
+        return sensor
 
     async def _tms_delete_sensor(self, tms: TMSInfo, sensor_id: int) -> None:
         """
