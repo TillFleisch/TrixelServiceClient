@@ -728,7 +728,7 @@ class Client:
 
             measurement = TMSMeasurement(sensor_id=sensor_id, timestamp=timestamp, value=value)
 
-            trixel_id = self._trixel_lookup[sensor.measurement_type]
+            trixel_id = self._trixel_lookup[config_sensor.measurement_type]
             if trixel_id not in batch_update:
                 batch_update[trixel_id] = list()
             batch_update[trixel_id].append(measurement)
