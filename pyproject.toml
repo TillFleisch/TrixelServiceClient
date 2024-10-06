@@ -13,7 +13,7 @@ dev = ["black", "isort"]
 
 [project]
 name = "trixelserviceclient"
-version = "0.0.0"
+version = "0.0.1"
 description = "Simple Python client for participating in privacy aware environmental monitoring."
 readme = "README.md"
 authors = [{ name = "Till", email = "till@fleisch.dev" }]
